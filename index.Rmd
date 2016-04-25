@@ -1,22 +1,173 @@
 ---
-title: "POractical Machine Learning : Course Projects"
+title: "Practical Machine Learning : Course Projects"
 author: "W Wocher"
 date: "April 24, 2016"
 output: html_document
 ---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+#Executive Summary
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+The goal of your project is to predict the manner in which the 6 participants did the exercise from accelerometers on the   
+- belt   
+- forearm   
+- arm   
+- dumbell   
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The training data for this project are available here:  
+- https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv  
 
-```{r}
-summary(cars)
+The test data are available here:  
+- https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv  
+
+#Synopsis
+Create 2 sets of data from the training data.   
+ 
+1  Try several different models and compare how accurate each of them are.  
+2  Once a model is decided on, then run predictions on the training data based on splitting is up into 2 data sets.   
+3  Load the data from the test file  
+4  Apply the model to this test file    
+
+#Exploratory Data Analysis
+
+##Install Libraries and Set Seed
+```{r install_libraries}
+library(lattice)
+library(ggplot2)
+library(mlbench)
+library(caret)
+library(randomForest)
+library(foreach)
+library(iterators)
+library(parallel)
+library(doParallel)
+set.seed(64)
 ```
 
-You can also embed plots, for example:
-
-```{r, echo=FALSE}
-plot(cars)
+##Load Data
+```{r load_data}
+setwd("D:/Coursera/08 Practical Machine Learning/Project")
+training.pml <- read.csv(file="pml-training.csv",head=TRUE,sep=",")
+testing.pml <- read.csv(file="pml-testing.csv",head=TRUE,sep=",")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Eliminate columns
+Many of the columns do not have a lot of data.   Remove columns that have NAs in them.
+```{r eliminate_na1}
+training.complete <- training.pml[sapply(training.pml, function(x) !any(is.na(x)))] 
+```
+
+## Columns for analysis
+The goal is to use data from accelerometers on the belt, forearm, arm, and dumbell.
+```{r column_names}
+column_names <- c("classe",
+				  grep("belt", colnames(training.complete), value = TRUE)
+				, grep("forearm", colnames(training.complete), value = TRUE)
+				, grep("arm", colnames(training.complete), value = TRUE)
+				, grep("dumbell", colnames(training.complete), value = TRUE)
+				 )
+column_names <- unique(column_names)
+```
+
+## Subset the data based on the columns
+The goal is to use data from accelerometers on the belt, forearm, arm, and dumbell.
+```{r column_subset}
+training.subset <- subset(training.complete, select=column_names)
+```
+The data set currently has  `r ncol(training.subset)` columns.  This includes the outcome and the predictors.   
+Modeling can not handle categorical predictors with more than 53 categories.  
+The following steps is meant to reduce the number of columns.  
+
+## Convert the columns to numeric.
+This step introduces NAs.  Eliminate all the colunns with NAs.
+```{r warning = FALSE}
+for(i in 2:ncol(training.subset)) {
+	training.subset[,i] = as.numeric(as.character(training.subset[,i]))
+}
+training.subset <- training.subset[sapply(training.subset, function(x) !any(is.na(x)))] 
+```
+The data set currently has  `r ncol(training.subset)` columns.   
+
+## Plot
+Plot the different data sets to see if anything has drastically changed
+```{r data_plot}
+par(mfrow=c(1,1))
+plot(training.pml$classe, col="blue", main="All Data From File")
+plot(training.complete$classe, col="yellow", main="Only Columns with Complete Data From File")
+plot(training.subset$classe, col="green", main="Subset of  Columns with Complete Data From File Defined")
+par(mfrow=c(1,1))
+```
+
+#Modeling
+
+## Split the data
+```{r data_split}
+inTrain <- createDataPartition(y=training.subset$classe, p=0.7, list=FALSE)
+training <- training.subset[inTrain,]
+testing <- training.subset[-inTrain,]
+```
+
+## Setup parallel processing
+Configure the trainControl object to be used in the modeling.
+```{r parallel_processing_start}
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+fitControl <- trainControl(method = "cv",
+                           number = 10,
+                           allowParallel = TRUE)
+```
+
+
+## Develop training model based on rf
+```{r rf_model}
+training.fit.rf <- train(classe ~ ., method="rf", data=training, trControl = fitControl)
+```
+
+## Develop training model based on knn
+```{r knn_model}
+training.fit.knn <- train(classe ~ ., method="knn", data=training, trControl = fitControl)
+```
+
+## Develop training model based on rpart
+```{r rpart_model}
+library(rpart)
+training.fit.rpart <- train(classe ~ ., method="rpart", data=training, trControl = fitControl)
+```
+  
+
+# Collect resamples and compare models
+```{r model_comparisons}
+results <- resamples(list(RF=training.fit.rf, KNN=training.fit.knn, RPART=training.fit.rpart))
+summary(results)
+par(mfrow=c(1,1))
+dotplot(results)
+```
+
+After comparing the models, Random Forest has the best results.  
+
+#Predicting
+
+## Prediction of the Training File : Training Set
+```{r rf_training_prediction_training}
+training.prediction.rf <- predict(training.fit.rf$finalModel, training, type = "class")
+confusionMatrix(training$classe,training.prediction.rf)
+```
+
+## Prediction of the Training File : Test Set
+```{r rf_training_prediction_testing}
+testing.prediction.rf <- predict(training.fit.rf$finalModel, testing, type = "class")
+confusionMatrix(testing$classe,testing.prediction.rf)
+```
+
+## Prediction of the Testing File
+Load the Testing file and apply the model
+```{r rf_testing_prediction}
+testing.pml.prediction.rf <- predict(training.fit.rf, testing.pml)
+
+testing.pml.prediction.rf
+```
+
+## De-register parallel processing cluster
+```{r parallel_processing_stop}
+stopCluster(cluster)
+```
+
